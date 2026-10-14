@@ -60,8 +60,16 @@ fastify.addHook('onRequest', async (request, reply) => {
 connectDB();
 
 // Parse CORS origins from environment variable
+// const getAllowedOrigins = () => {
+//   const origins = process.env.ALLOWED_ORIGINS;
+//   return origins.split(',').map(origin => origin.trim());
+// };
+
+// ALLOWED_ORIGINS="*" (or unset) => allow all origins (testing)
+// ALLOWED_ORIGINS="https://a.com,https://b.com" => allow only those origins
 const getAllowedOrigins = () => {
-  const origins = process.env.ALLOWED_ORIGINS;
+  const origins = process.env.ALLOWED_ORIGINS || '*';
+  if (origins.trim() === '*') return true;
   return origins.split(',').map(origin => origin.trim());
 };
 
@@ -135,7 +143,9 @@ const start = async () => {
       host: process.env.HOST || '0.0.0.0'
     });
     console.log(`Server running on port ${process.env.PORT || 3000}`);
-    console.log(`CORS enabled for origins: ${getAllowedOrigins().join(', ')}`);
+    // console.log(`CORS enabled for origins: ${getAllowedOrigins().join(', ')}`);
+    const corsOrigins = getAllowedOrigins();
+    console.log(`CORS enabled for origins: ${corsOrigins === true ? '* (all)' : corsOrigins.join(', ')}`);
     console.log(`✅ Images served from Cloudflare R2`);
     console.log(`Contact routes registered at: /api/contacts`);
     console.log(`Stats routes registered at: /api/stats`);
