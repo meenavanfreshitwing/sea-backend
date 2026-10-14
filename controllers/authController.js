@@ -268,6 +268,16 @@ export const createAdmin = async (request, reply) => {
       });
     }
     
+    // 🔒 Allow this public route only for the FIRST admin.
+    // After one admin exists, create more admins from the admin panel (protected route).
+    const adminCount = await User.countDocuments({ role: 'admin' });
+    if (adminCount > 0) {
+      return reply.status(403).send({
+        success: false,
+        message: 'Admin already exists. Use the admin panel to add more admins.'
+      });
+    }
+
     // Check if admin already exists
     const existingAdmin = await User.findOne({ email });
     if (existingAdmin) {
