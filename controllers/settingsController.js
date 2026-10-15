@@ -1,4 +1,5 @@
 import Setting from '../models/Setting.js';
+import { razorpayConfig } from '../utils/razorpayConfig.js';
 
 // @desc    Get all settings
 // @route   GET /api/admin/settings
@@ -14,7 +15,16 @@ export const getSettings = async (request, reply) => {
     responseData.twitterUrl = responseData.socialMedia?.twitter || '';
     responseData.youtubeUrl = responseData.socialMedia?.youtube || '';
     responseData.linkedinUrl = responseData.socialMedia?.linkedin || '';
-    
+
+    // Keys in the server .env win: tell the admin page, and never send the .env secret
+    const rzp = razorpayConfig(responseData);
+    responseData.razorpayFromEnv = rzp.fromEnv;
+    if (rzp.fromEnv) {
+      responseData.razorpayEnabled = rzp.enabled;
+      responseData.razorpayKeyId = rzp.keyId;
+      responseData.razorpayKeySecret = '';
+    }
+
     return reply.status(200).send({
       success: true,
       data: responseData
@@ -43,6 +53,8 @@ export const updateSettings = async (request, reply) => {
       contactEmail,
       contactNumber,
       companyAddress,
+      whatsappNumber,
+      fssaiNumber,
       socialMedia,
       facebookUrl,
       twitterUrl,
@@ -86,6 +98,8 @@ export const updateSettings = async (request, reply) => {
     if (contactEmail !== undefined) settings.contactEmail = contactEmail;
     if (contactNumber !== undefined) settings.contactNumber = contactNumber;
     if (companyAddress !== undefined) settings.companyAddress = companyAddress;
+    if (whatsappNumber !== undefined) settings.whatsappNumber = String(whatsappNumber).trim();
+    if (fssaiNumber !== undefined) settings.fssaiNumber = String(fssaiNumber).trim();
     
     // Update footer settings
     if (footerText !== undefined) settings.footerText = footerText;

@@ -380,8 +380,16 @@ export const updateProduct = async (request, reply) => {
 
                 const newImages = variantImagesMap[index] || [];
 
+                // Keep each pack's id when it is edited, so carts, past orders and
+                // "Order again" still point to it (older admin builds don't send _id: match by name)
+                const oldVariants = existingProduct.variants || [];
+                const keptId =
+                    (variant._id && oldVariants.some(o => o._id?.toString() === String(variant._id)) && variant._id) ||
+                    oldVariants.find(o => o.variantName && o.variantName === variant.variantName)?._id;
+
                 return {
                     ...variant,
+                    ...(keptId ? { _id: keptId } : {}),
                     images: [...keptOldImages, ...newImages]
                 };
             });

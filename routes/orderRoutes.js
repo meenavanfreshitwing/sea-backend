@@ -16,7 +16,7 @@ import {
   printOrderReceiptPDF,
   processRefund  // ADD THIS IMPORT
 } from '../controllers/orderController.js';
-import { requireStrictAuth, requireAuth } from '../controllers/authController.js';
+import { requireStrictAuth, requireAuth, requireAdmin } from '../controllers/authController.js';
 
 async function orderRoutes(fastify, options) {
   
@@ -72,13 +72,14 @@ async function orderRoutes(fastify, options) {
   // Process refund for an order
   fastify.post('/admin/orders/:id/refund', { preHandler: requireStrictAuth }, processRefund);
   
-  // ========== PAYMENT WEBHOOK ROUTES (Public) ==========
-  
-  // Payment success webhook (called by Razorpay)
-  fastify.put('/orders/payment-success', updateOrderPaymentSuccess);
-  
-  // Payment failed webhook (called by Razorpay)
-  fastify.put('/orders/payment-failed', updateOrderPaymentFailed);
+  // ========== MANUAL PAYMENT STATUS (Admin only) ==========
+  // Razorpay itself confirms payments via /payments/verify-payment and
+  // /payments/razorpay-webhook (both signature-checked). These two routes
+  // skip signature checks, so they are restricted to admins.
+
+  fastify.put('/orders/payment-success', { preHandler: requireAdmin }, updateOrderPaymentSuccess);
+
+  fastify.put('/orders/payment-failed', { preHandler: requireAdmin }, updateOrderPaymentFailed);
 }
 
 export default orderRoutes;

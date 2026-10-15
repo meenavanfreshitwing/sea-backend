@@ -264,7 +264,40 @@ export const getCart = async (request, reply) => {
     }
 
     console.log(`Cart has ${cart.items.length} items`);
-    
+
+    // Fish and packs change when admin edits a product. Re-link items to a pack with the
+    // same name, and drop items whose fish or pack no longer exists (instead of failing at checkout).
+    const removedItems = [];
+    let cartChanged = false;
+    cart.items = cart.items.filter(item => {
+      const product = item.product;
+      if (!product || !product._id) {
+        removedItems.push(item.productName || 'Item');
+        cartChanged = true;
+        return false;
+      }
+      const variants = product.variants || [];
+      if (!variants.length || !item.variantId) return true;
+      if (variants.some(v => v._id?.toString() === String(item.variantId))) return true;
+      const sameName = item.variantName && variants.find(v => v.variantName === item.variantName);
+      if (sameName) {
+        item.variantId = sameName._id.toString();
+        item.price = sameName.price;
+        item.weight = sameName.weight || 0;
+        item.weightUnit = sameName.weightUnit || 'gram';
+        cartChanged = true;
+        return true;
+      }
+      removedItems.push(`${item.productName || product.name}${item.variantName ? ` (${item.variantName})` : ''}`);
+      cartChanged = true;
+      return false;
+    });
+    if (cartChanged) {
+      cart.totalItems = cart.items.reduce((sum, item) => sum + item.quantity, 0);
+      cart.totalPrice = cart.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+      await cart.save();
+    }
+
     // Enrich cart items with variant images
     for (const item of cart.items) {
       console.log(`\nProcessing cart item ${item._id}:`);
@@ -300,9 +333,12 @@ export const getCart = async (request, reply) => {
 
     console.log('=== GET CART DEBUG END ===\n');
     
+    const data = cart.toObject();
+    if (removedItems.length) data.removedItems = removedItems; // shown once on the cart page
+
     return reply.status(200).send({
       success: true,
-      data: cart
+      data
     });
 
   } catch (error) {

@@ -1,3 +1,5 @@
+import { validateDeliverySelection, flagOrderIfDateUnavailable } from '../services/bookingService.js';
+import { razorpayConfig } from '../utils/razorpayConfig.js';
 import Order from '../models/Order.js';
 import Cart from '../models/Cart.js';
 import Product from '../models/productModel.js';
@@ -339,9 +341,9 @@ const getStoreSettings = async () => {
     const settings = await Setting.getSettings();
     cachedSettings = {
       siteName: settings.siteName,
-      contactEmail: settings.contactEmail || 'contact@example.com',
-      contactNumber: settings.contactNumber || '+91 98765 43210',
-      companyAddress: settings.companyAddress || 'Ganga Enterprise, 2nd Floor, Spencer Plaza, Anna Salai, Chennai',
+      contactEmail: settings.contactEmail || 'meenavanfresh@gmail.com',
+      contactNumber: settings.contactNumber || '+91 93423 92925',
+      companyAddress: settings.companyAddress || '',
       socialMedia: settings.socialMedia || {},
       razorpayKeyId: settings.razorpayKeyId || '',
       razorpayKeySecret: settings.razorpayKeySecret || ''
@@ -351,8 +353,8 @@ const getStoreSettings = async () => {
   } catch (error) {
     console.error('Error fetching settings:', error);
     return {
-      siteName: '', contactEmail: 'contact@example.com', contactNumber: '+91 98765 43210',
-      companyAddress: 'Ganga Enterprise, 2nd Floor, Spencer Plaza, Anna Salai, Chennai',
+      siteName: '', contactEmail: 'meenavanfresh@gmail.com', contactNumber: '+91 93423 92925',
+      companyAddress: '',
       socialMedia: {}, razorpayKeyId: '', razorpayKeySecret: ''
     };
   }
@@ -417,9 +419,14 @@ export const createOrder = async (request, reply) => {
       typedArea,
       customerPin,        // ✅ NEW — { lat, lng } from frontend pin drop
       landmark ,
-            alternatePhone      // ✅ NEW — optional alternate number
+            alternatePhone,     // ✅ NEW — optional alternate number
            // ✅ NEW — "Near Anjaneyar Kovil"
+      deliveryDate,       // 'YYYY-MM-DD' chosen on the booking calendar
+      deliverySlotId,     // only when time slots are enabled
+      guestId             // guest checkout: identifies the guest's own cart
     } = request.body;
+    // Logged-in customers use their account cart; guests only their own guest cart
+    const cartOwner = userId ? { user: userId } : guestId ? { guestId: String(guestId) } : null;
 
     if (!shippingAddress || !paymentMethod) {
       return reply.status(400).send({ success: false, message: 'Shipping address and payment method are required' });
@@ -430,6 +437,12 @@ export const createOrder = async (request, reply) => {
       if (!shippingAddress[field]) {
         return reply.status(400).send({ success: false, message: `Shipping address field '${field}' is required` });
       }
+    }
+
+    // Booking calendar: reject same-day, past-cutoff and admin-blocked dates
+    const booking = await validateDeliverySelection({ deliveryDate, deliverySlotId });
+    if (!booking.ok) {
+      return reply.status(400).send({ success: false, code: booking.code, message: booking.message });
     }
 
     let totalAmount = 0;
@@ -479,7 +492,7 @@ export const createOrder = async (request, reply) => {
     } else {
       console.log(`🛒 Normal checkout`);
 
-      const cart = await Cart.findOne({ user: userId }).populate('items.product');
+      const cart = cartOwner ? await Cart.findOne(cartOwner).populate('items.product') : null;
       if (!cart || cart.items.length === 0) {
         return reply.status(400).send({ success: false, message: 'Cart is empty' });
       }
@@ -503,12 +516,18 @@ export const createOrder = async (request, reply) => {
           let variant = null;
           if (item.variantId && item.variantId !== 'null') {
             variant = product.variants.find(v => v._id.toString() === item.variantId);
-          } else if (item.variantName) {
+          }
+          // Pack re-created by an admin edit: same pack name still counts
+          if (!variant && item.variantName) {
             variant = product.variants.find(v => v.variantName === item.variantName);
           }
 
           if (!variant) {
-            return reply.status(400).send({ success: false, message: `Variant not found for ${product.name}` });
+            return reply.status(400).send({
+              success: false,
+              code: 'PACK_UNAVAILABLE',
+              message: `"${product.name}${item.variantName ? ` (${item.variantName})` : ''}" is no longer available. Please remove it from your cart and add the fish again.`
+            });
           }
           if (variant.stock < item.quantity) {
             return reply.status(400).send({ success: false, message: `Insufficient stock for ${product.name} - ${variant.variantName}` });
@@ -618,6 +637,8 @@ export const createOrder = async (request, reply) => {
       wardName: wardInfo.wardName,
       deliveryZone: wardInfo.deliveryZone,
       typedArea: typedArea ? typedArea.trim() : '',
+      deliveryDate: booking.deliveryDate,
+      deliverySlot: booking.deliverySlot || undefined,
       paymentMethod,
       paymentId: paymentMethod !== 'cod' ? paymentId : undefined,
       paymentStatus: 'pending',
@@ -639,9 +660,9 @@ export const createOrder = async (request, reply) => {
       await order.save();
     }
 
-    if (!skipCartClear && userId) {
+    if (!skipCartClear && cartOwner) {
       await Cart.findOneAndUpdate(
-        { user: userId },
+        cartOwner,
         { $set: { items: [], totalItems: 0, totalPrice: 0, totalOriginalPrice: 0, totalSavings: 0 } }
       );
       console.log(`🗑️ Cart cleared`);
@@ -680,7 +701,9 @@ export const createOrder = async (request, reply) => {
         taxAmount: order.taxAmount,
         discountAmount: order.discountAmount,
         finalAmount: order.finalAmount,
-        createdAt: order.createdAt
+        createdAt: order.createdAt,
+        deliveryDate: order.deliveryDate,
+        deliverySlot: order.deliverySlot
       },
       requiresPayment: paymentMethod !== 'cod'
     });
@@ -725,6 +748,7 @@ export const updateOrderPaymentSuccess = async (request, reply) => {
     order.orderStatus = 'confirmed';
     order.paymentId = paymentId;
     order.paidAt = new Date();
+    await flagOrderIfDateUnavailable(order);
     await order.save();
 
     const customerEmail = order.shippingAddress?.email;
@@ -1244,9 +1268,17 @@ export const cancelOrder = async (request, reply) => {
     if (!isOrderOwner && !isAdmin) return reply.status(403).send({ success: false, message: 'Not authorized' });
     if (order.orderStatus === 'cancelled') return reply.status(400).send({ success: false, message: 'Already cancelled' });
 
-    const cancellableStatuses = ['pending', 'confirmed', 'processing'];
-    if (!cancellableStatuses.includes(order.orderStatus)) {
-      return reply.status(400).send({ success: false, message: `Cannot cancel order already ${order.orderStatus}` });
+    // Customers may cancel only until the shop starts packing (admin moves it to "processing")
+    // and before the delivery partner picks it up. Admin can still cancel later.
+    const cancellableStatuses = isAdmin ? ['pending', 'confirmed', 'processing'] : ['pending', 'confirmed'];
+    const pickedUp = ['picked_up', 'delivered'].includes(order.deliveryStatus);
+    if (!cancellableStatuses.includes(order.orderStatus) || (!isAdmin && pickedUp)) {
+      return reply.status(400).send({
+        success: false,
+        code: 'NOT_CANCELLABLE',
+        orderStatus: order.orderStatus,
+        message: `Cannot cancel order already ${pickedUp ? 'picked up for delivery' : order.orderStatus}`
+      });
     }
 
     order.orderStatus = 'cancelled';
@@ -1343,10 +1375,11 @@ export const processRefund = async (request, reply) => {
 
     try {
       const settings = await getStoreSettings();
-      if (!settings.razorpayKeyId || !settings.razorpayKeySecret) throw new Error('Razorpay keys not configured');
+      const { keyId, keySecret } = razorpayConfig(settings);
+      if (!keyId || !keySecret) throw new Error('Razorpay keys not configured');
 
       const Razorpay = await import('razorpay');
-      const razorpay = new Razorpay.default({ key_id: settings.razorpayKeyId, key_secret: settings.razorpayKeySecret });
+      const razorpay = new Razorpay.default({ key_id: keyId, key_secret: keySecret });
 
       const refund = await razorpay.payments.refund(order.paymentId, {
         amount: refundAmountInPaise, speed: 'normal',

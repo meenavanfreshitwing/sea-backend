@@ -93,7 +93,7 @@ const getFolderForFieldname = (fieldname) => {
 };
 
 // Save uploaded file to R2 under backend-images/<subfolder>/
-const saveFileToR2 = async (part, fieldname) => {
+const saveFileToR2 = async (part, fieldname, folderOverride) => {
     const buffer = await streamToBuffer(part.file);
 
     const ext = path.extname(part.filename);
@@ -101,7 +101,7 @@ const saveFileToR2 = async (part, fieldname) => {
     const safeFieldname = fieldname.replace(/[^a-zA-Z0-9]/g, '_');
     const filename = `${Date.now()}-${randomString}-${safeFieldname}${ext}`;
 
-    const subfolder = getFolderForFieldname(fieldname);
+    const subfolder = folderOverride || getFolderForFieldname(fieldname);
     const key = `backend-images/${subfolder}/${filename}`;
 
     const { url } = await putToR2(buffer, key, part.mimetype);
@@ -129,11 +129,13 @@ export const uploadImages = async (request, reply) => {
         }
 
         if (request.isMultipart()) {
+            // Routes may set config.uploadFolder to pick the R2 subfolder
+            const folderOverride = request.routeOptions?.config?.uploadFolder;
             const parts = request.parts();
 
             for await (const part of parts) {
                 if (part.file) {
-                    const savedFile = await saveFileToR2(part, part.fieldname);
+                    const savedFile = await saveFileToR2(part, part.fieldname, folderOverride);
                     files.push(savedFile);
                 } else {
                     data[part.fieldname] = part.value;
@@ -162,13 +164,15 @@ export const optimizeImages = async (request, reply) => {
         }
 
         const processedFiles = [];
+        // Routes may set config.imageMaxSize (default 400px)
+        const maxSize = request.routeOptions?.config?.imageMaxSize || 400;
 
         for (const file of request.uploadedFiles) {
             try {
                 const originalBuffer = file.buffer;
 
                 const optimizedBuffer = await sharp(originalBuffer)
-                    .resize(400, 400, { fit: 'inside', withoutEnlargement: true })
+                    .resize(maxSize, maxSize, { fit: 'inside', withoutEnlargement: true })
                     .webp({ quality: 40, effort: 6 })
                     .toBuffer();
 

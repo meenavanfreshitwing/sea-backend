@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { razorpayConfig } from '../utils/razorpayConfig.js';
 
 const settingSchema = new mongoose.Schema({
   // Payment Settings
@@ -41,6 +42,16 @@ const settingSchema = new mongoose.Schema({
     default: '+91 1234567890'
   },
   companyAddress: {
+    type: String,
+    default: ''
+  },
+  // WhatsApp number for the "Chat on WhatsApp" button (digits, with country code)
+  whatsappNumber: {
+    type: String,
+    default: ''
+  },
+  // FSSAI food licence number shown in the website footer
+  fssaiNumber: {
     type: String,
     default: ''
   },
@@ -131,8 +142,9 @@ settingSchema.statics.getPublicSettings = async function() {
   const settings = await this.getSettings();
   
   return {
-    razorpayEnabled: settings.razorpayEnabled,
-    razorpayKeyId: settings.razorpayKeyId,
+    // Key ID is public by design (the payment popup needs it); the secret never leaves the server
+    razorpayEnabled: razorpayConfig(settings).enabled,
+    razorpayKeyId: razorpayConfig(settings).enabled ? razorpayConfig(settings).keyId : '',
     cashOnDeliveryEnabled: settings.cashOnDeliveryEnabled,
     siteName: settings.siteName,
     siteTitle: settings.siteTitle,
@@ -140,6 +152,8 @@ settingSchema.statics.getPublicSettings = async function() {
     contactEmail: settings.contactEmail,
     contactNumber: settings.contactNumber,
     companyAddress: settings.companyAddress,
+    whatsappNumber: settings.whatsappNumber,
+    fssaiNumber: settings.fssaiNumber,
     socialMedia: settings.socialMedia,
     footerText: settings.footerText,
     footerLinks: settings.footerLinks,

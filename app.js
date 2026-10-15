@@ -1,9 +1,10 @@
+// Load .env before any other module reads process.env
+import './config/env.js';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import multipart from '@fastify/multipart';
 import rawBody from 'fastify-raw-body';
-import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import connectDB from './config/database.js';
@@ -22,6 +23,9 @@ import settingsRoutes from './routes/settingsRoutes.js';
 import statsRoutes from './routes/statsRoutes.js';
 import adminUserRoutes from './routes/adminUserRoutes.js';
 import wardRoutes from './routes/wardRoutes.js';
+import blogRoutes from './routes/blogRoutes.js';
+import bookingRoutes from './routes/bookingRoutes.js';
+import reviewRoutes from './routes/reviewRoutes.js';
 
 // ✅ ADD THESE IMPORTS FOR DELIVERY BOY
 import deliveryRoutes from './routes/deliveryRoutes.js';
@@ -34,7 +38,14 @@ import returnRoutes from './routes/returnRoutes.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-dotenv.config();
+// Fail fast with a clear message instead of crashing later
+const missingEnv = ['MONGODB_URI', 'JWT_SECRET'].filter(key => !process.env[key]);
+if (missingEnv.length) {
+  console.error(`❌ Missing required environment variables: ${missingEnv.join(', ')} (see .env.example)`);
+  process.exit(1);
+}
+
+const PORT = parseInt(process.env.PORT) || 5000;
 
 const fastify = Fastify({
   logger: true
@@ -47,35 +58,23 @@ await fastify.register(rawBody, {
   runFirst: true,
 });
 
-// ADD HERE
-fastify.addHook('onRequest', async (request, reply) => {
-  console.log('================================');
-  console.log('REQUEST RECEIVED');
-  console.log('Method:', request.method);
-  console.log('URL:', request.url);
-  console.log('================================');
-});
-
 // Connect to MongoDB
 connectDB();
 
-// Parse CORS origins from environment variable
-// const getAllowedOrigins = () => {
-//   const origins = process.env.ALLOWED_ORIGINS;
-//   return origins.split(',').map(origin => origin.trim());
-// };
-
-// ALLOWED_ORIGINS="*" (or unset) => allow all origins (testing)
-// ALLOWED_ORIGINS="https://a.com,https://b.com" => allow only those origins
+// Parse CORS origins from environment variable.
+// "*" (or unset) reflects the request origin, which also works with credentials.
 const getAllowedOrigins = () => {
-  const origins = process.env.ALLOWED_ORIGINS || '*';
-  if (origins.trim() === '*') return true;
-  return origins.split(',').map(origin => origin.trim());
+  const origins = (process.env.ALLOWED_ORIGINS || '*')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean);
+  return origins.includes('*') ? ['*'] : origins;
 };
+const allowedOrigins = getAllowedOrigins();
 
 // Register plugins
 await fastify.register(cors, {
-  origin: getAllowedOrigins(),
+  origin: allowedOrigins.includes('*') ? true : allowedOrigins,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -118,6 +117,9 @@ await fastify.register(settingsRoutes, { prefix: '/api' });
 await fastify.register(statsRoutes, { prefix: '/api' });
 await fastify.register(adminUserRoutes, { prefix: '/api' });
 await fastify.register(wardRoutes, { prefix: '/api' });
+await fastify.register(blogRoutes, { prefix: '/api' });
+await fastify.register(bookingRoutes, { prefix: '/api' });
+await fastify.register(reviewRoutes, { prefix: '/api' });
 
 // ✅ ADD DELIVERY BOY ROUTES
 await fastify.register(deliveryRoutes, { prefix: '/api' });
@@ -139,13 +141,11 @@ fastify.setErrorHandler((error, request, reply) => {
 const start = async () => {
   try {
     await fastify.listen({
-      port: process.env.PORT || 3000,
+      port: PORT,
       host: process.env.HOST || '0.0.0.0'
     });
-    console.log(`Server running on port ${process.env.PORT || 3000}`);
-    // console.log(`CORS enabled for origins: ${getAllowedOrigins().join(', ')}`);
-    const corsOrigins = getAllowedOrigins();
-    console.log(`CORS enabled for origins: ${corsOrigins === true ? '* (all)' : corsOrigins.join(', ')}`);
+    console.log(`Server running on port ${PORT}`);
+    console.log(`CORS enabled for origins: ${allowedOrigins.join(', ')}`);
     console.log(`✅ Images served from Cloudflare R2`);
     console.log(`Contact routes registered at: /api/contacts`);
     console.log(`Stats routes registered at: /api/stats`);
@@ -153,6 +153,8 @@ const start = async () => {
     console.log(`✅ Admin delivery routes registered at: /api/admin/delivery-boys`);
     console.log(`✅ Shipping routes registered at: /api/shipping`);
     console.log(`✅ Returns routes registered at: /api/returns`);
+    console.log(`✅ Blog routes registered at: /api/blogs`);
+    console.log(`✅ Booking routes registered at: /api/booking`);
   } catch (err) {
     fastify.log.error(err);
     process.exit(1);

@@ -3,7 +3,7 @@ import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
 import Setting from '../models/Setting.js';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 // ============================================
 // 🎯 SENDER NAME — Dynamic from Settings

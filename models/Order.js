@@ -103,6 +103,22 @@ const orderSchema = new mongoose.Schema({
     default: 'unassigned'
   },
 
+  // Booking: customer-chosen delivery day ('YYYY-MM-DD', IST) and optional time slot.
+  // Orders placed before the booking calendar existed have no deliveryDate.
+  deliveryDate: { type: String, default: null, index: true },
+  deliverySlot: {
+    slotId: { type: String },
+    label: { type: String },
+    startTime: { type: String },
+    endTime: { type: String }
+  },
+  // Set when a paid order's date became unavailable (e.g. blocked during payment)
+  bookingReview: {
+    required: { type: Boolean, default: false },
+    reason: { type: String, default: '' },
+    flaggedAt: { type: Date, default: null }
+  },
+
 }, { timestamps: true });
 
 // Pre-save middleware for orderId and sNo

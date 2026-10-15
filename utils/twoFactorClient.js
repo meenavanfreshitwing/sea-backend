@@ -1,5 +1,5 @@
 import dotenv from 'dotenv';
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const TWO_FACTOR_BASE_URL = process.env.TWO_FACTOR_BASE_URL || 'https://2factor.in/API/V1';
 const API_KEY = process.env.TWO_FACTOR_API_KEY; // Use from .env

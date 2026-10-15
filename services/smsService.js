@@ -3,7 +3,7 @@ import axios from 'axios';
 import dotenv from 'dotenv';
 import Setting from '../models/Setting.js';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const TWO_FACTOR_API_KEY = process.env.TWO_FACTOR_API_KEY;
 const TWO_FACTOR_BASE_URL = process.env.TWO_FACTOR_BASE_URL || 'https://2factor.in/API/V1';

@@ -1,3 +1,4 @@
+import { istNow, addDays, istDayRange } from '../utils/istDate.js';
 import DeliveryBoy from '../models/DeliveryBoy.js';
 import Order from '../models/Order.js';
 import bcrypt from 'bcryptjs';
@@ -590,19 +591,24 @@ export const downloadTodayOrdersPDF = async (request, reply) => {
   try {
     const PDFDocument = (await import('pdfkit')).default;
 
+    // Orders to deliver tomorrow (IST). Orders from before the booking calendar
+    // have no deliveryDate, so for those keep the old rule: placed today.
     const now = new Date();
-    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-    const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    const todayIST = istNow(now).date;
+    const tomorrowIST = addDays(todayIST, 1);
+    const { start: startOfDay, end: endOfDay } = istDayRange(todayIST);
 
-    const tomorrow = new Date(startOfDay);
-    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrow = new Date(`${tomorrowIST}T00:00:00+05:30`);
 
-    const fmtLong = (d) => d.toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-    const fmtShort = (d) => d.toLocaleDateString('en-IN', { weekday: 'short', month: 'short', day: 'numeric' });
+    const fmtLong = (d) => d.toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Asia/Kolkata' });
+    const fmtShort = (d) => d.toLocaleDateString('en-IN', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'Asia/Kolkata' });
 
     const orders = await Order.find({
-      createdAt: { $gte: startOfDay, $lte: endOfDay },
-      orderStatus: { $ne: 'cancelled' }
+      orderStatus: { $ne: 'cancelled' },
+      $or: [
+        { deliveryDate: tomorrowIST },
+        { deliveryDate: null, createdAt: { $gte: startOfDay, $lte: endOfDay } }
+      ]
     }).sort({ createdAt: 1 });
 
     const doc = new PDFDocument({ margin: 40, size: 'A4' });

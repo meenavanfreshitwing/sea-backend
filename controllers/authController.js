@@ -268,14 +268,22 @@ export const createAdmin = async (request, reply) => {
       });
     }
     
-    // 🔒 Allow this public route only for the FIRST admin.
-    // After one admin exists, create more admins from the admin panel (protected route).
+    // Only allow open sign-up for the very first admin; after that an admin must be logged in
     const adminCount = await User.countDocuments({ role: 'admin' });
     if (adminCount > 0) {
-      return reply.status(403).send({
-        success: false,
-        message: 'Admin already exists. Use the admin panel to add more admins.'
-      });
+      let isAdmin = false;
+      try {
+        await request.jwtVerify();
+        isAdmin = request.user?.role === 'admin';
+      } catch {
+        isAdmin = false;
+      }
+      if (!isAdmin) {
+        return reply.status(403).send({
+          success: false,
+          message: 'Access denied. Admin only.'
+        });
+      }
     }
 
     // Check if admin already exists

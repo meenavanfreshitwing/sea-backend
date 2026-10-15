@@ -1,4 +1,5 @@
 // controllers/paymentController.js
+import { checkOrderDeliveryStillValid, flagOrderIfDateUnavailable } from '../services/bookingService.js';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import Order from '../models/Order.js';
@@ -8,18 +9,20 @@ import Setting from '../models/Setting.js';
 import { sendOrderConfirmationEmail } from '../services/emailService.js';
 import { sendOrderConfirmationSMS } from '../services/smsService.js';
 import Product from '../models/productModel.js';
+import { razorpayConfig } from '../utils/razorpayConfig.js';
 
-// Get Razorpay instance from settings
+// Get Razorpay instance (keys from server .env, else Admin → Settings)
 const getRazorpayInstance = async () => {
   const settings = await Setting.findOne().lean();
   
-  if (!settings?.razorpayKeyId || !settings?.razorpayKeySecret) {
-    throw new Error('Razorpay keys not configured in settings');
+  const { keyId, keySecret } = razorpayConfig(settings);
+  if (!keyId || !keySecret) {
+    throw new Error('Razorpay keys not configured');
   }
   
   return new Razorpay({
-    key_id: settings.razorpayKeyId,
-    key_secret: settings.razorpayKeySecret,
+    key_id: keyId,
+    key_secret: keySecret,
   });
 };
 
@@ -51,10 +54,20 @@ export const createRazorpayOrder = async (request, reply) => {
       });
     }
 
+    // Re-check the delivery date before taking money (it may have been blocked since)
+    const booking = await checkOrderDeliveryStillValid(order);
+    if (!booking.ok) {
+      return reply.status(400).send({
+        success: false,
+        code: booking.code,
+        message: booking.message
+      });
+    }
+
     // Get settings
     const settings = await Setting.findOne().lean();
     
-    if (!settings?.razorpayEnabled) {
+    if (!razorpayConfig(settings).enabled) {
       return reply.status(400).send({
         success: false,
         message: 'Razorpay payments are currently disabled'
@@ -98,7 +111,7 @@ export const createRazorpayOrder = async (request, reply) => {
     return reply.status(200).send({
       success: true,
       order: razorpayOrder,
-      key: settings.razorpayKeyId
+      key: razorpayConfig(settings).keyId
     });
 
   } catch (error) {
@@ -152,7 +165,8 @@ export const verifyPayment = async (request, reply) => {
     // Get settings for secret key
     const settings = await Setting.findOne().lean();
     
-    if (!settings?.razorpayKeySecret) {
+    const { keySecret } = razorpayConfig(settings);
+    if (!keySecret) {
       return reply.status(500).send({
         success: false,
         message: 'Razorpay secret key not configured'
@@ -161,7 +175,7 @@ export const verifyPayment = async (request, reply) => {
     
     // Verify signature
     const generatedSignature = crypto
-      .createHmac('sha256', settings.razorpayKeySecret)
+      .createHmac('sha256', keySecret)
       .update(`${razorpay_order_id}|${razorpay_payment_id}`)
       .digest('hex');
 
@@ -219,6 +233,8 @@ export const verifyPayment = async (request, reply) => {
     order.paymentStatus = 'completed';
     order.orderStatus = 'confirmed';
     order.paidAt = new Date();
+    // Payment is captured: never reject it, but flag the order if its date was blocked meanwhile
+    await flagOrderIfDateUnavailable(order);
     await order.save();
 
     console.log('✅ Payment verified for order:', order.orderId);
@@ -286,13 +302,14 @@ export const paymentFailed = async (request, reply) => {
 
     // Update payment record
     await Payment.findOneAndUpdate(
-      { razorpayOrderId: razorpay_order_id },
+      { razorpayOrderId: razorpay_order_id, status: { $ne: 'paid' } },
       { status: 'failed' }
     );
 
     // Update order
     const order = await Order.findOne({ razorpayOrderId: razorpay_order_id });
-    if (order) {
+    // Never cancel an order that was paid meanwhile (e.g. confirmed by the webhook)
+    if (order && order.paymentStatus !== 'completed') {
       order.paymentStatus = 'failed';
       order.orderStatus = 'cancelled';
       await order.save();
@@ -611,6 +628,8 @@ export const razorpayWebhook = async (request, reply) => {
       order.paymentStatus = 'completed';
       order.orderStatus = 'confirmed';
       order.paidAt = new Date();
+      // Payment is captured: never reject it, but flag the order if its date was blocked meanwhile
+      await flagOrderIfDateUnavailable(order);
 
       await order.save();
 

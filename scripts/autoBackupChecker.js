@@ -8,7 +8,7 @@ import BackupService from '../services/backupService.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);   // ✅ two underscores on both
 
-dotenv.config({ path: path.join(__dirname, '../.env') });
+dotenv.config({ path: path.join(__dirname, '../.env'), quiet: true });
 
 async function autoBackupCheck() {
     try {
