@@ -1,4 +1,5 @@
 import { validateDeliverySelection, flagOrderIfDateUnavailable } from '../services/bookingService.js';
+import { runInBackground } from '../utils/runInBackground.js';
 import { razorpayConfig } from '../utils/razorpayConfig.js';
 import Order from '../models/Order.js';
 import Cart from '../models/Cart.js';
@@ -674,11 +675,13 @@ export const createOrder = async (request, reply) => {
       const customerEmail = shippingAddress.email;
       const customerPhone = shippingAddress.phone;
 
+      // Sent after replying: Gmail can take 20-30 s, which made the app time out
+      // (and customers retry, creating duplicate orders) although the order was saved
       if (customerEmail) {
-        try { await sendOrderConfirmationEmail(order, { email: customerEmail, name: customerName }); } catch (e) { console.error(e); }
+        runInBackground('order confirmation email', () => sendOrderConfirmationEmail(order, { email: customerEmail, name: customerName }));
       }
       if (customerPhone) {
-        try { await sendOrderConfirmationSMS(customerPhone, order); } catch (e) { console.error(e); }
+        runInBackground('order confirmation SMS', () => sendOrderConfirmationSMS(customerPhone, order));
       }
     }
 
