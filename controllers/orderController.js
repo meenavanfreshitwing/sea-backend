@@ -568,7 +568,9 @@ export const createOrder = async (request, reply) => {
     }
 
     const shippingFee = 0;
-    const taxAmount = Math.round((totalAmount * 5) / 100);
+    // Tax on the subtotal, in percent. No tax by default; set TAX_RATE (e.g. 5) in the env to charge it.
+    const taxRate = Number(process.env.TAX_RATE) || 0;
+    const taxAmount = Math.round((totalAmount * taxRate) / 100);
     const discountAmount = products.reduce((sum, item) => {
       if (item.originalPrice > item.price) {
         return sum + ((item.originalPrice - item.price) * item.quantity);
