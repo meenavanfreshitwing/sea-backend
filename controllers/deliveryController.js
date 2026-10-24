@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { sendOrderStatusUpdateEmail } from '../services/emailService.js';
 import { sendOrderStatusSMS } from '../services/smsService.js';
+import { runInBackground } from '../utils/runInBackground.js';
 
 // Delivery Boy Login
 export const deliveryLogin = async (request, reply) => {
@@ -136,11 +137,12 @@ export const markPickedUp = async (request, reply) => {
     const customerName = order.name || order.shippingAddress?.name || 'Customer';
     const customerPhone = order.shippingAddress?.phone;
 
+    // Sent after replying so the delivery panel does not wait for Gmail / SMS
     if (customerEmail) {
-      try { await sendOrderStatusUpdateEmail(order, { email: customerEmail, name: customerName }, 'confirmed', 'shipped'); } catch (e) { console.error(e); }
+      runInBackground('shipped email', () => sendOrderStatusUpdateEmail(order, { email: customerEmail, name: customerName }, 'confirmed', 'shipped'));
     }
     if (customerPhone) {
-      try { await sendOrderStatusSMS(customerPhone, order, 'shipped'); } catch (e) { console.error(e); }
+      runInBackground('shipped SMS', () => sendOrderStatusSMS(customerPhone, order, 'shipped'));
     }
 
     return reply.status(200).send({
@@ -184,11 +186,12 @@ export const markDelivered = async (request, reply) => {
     const customerName = order.name || order.shippingAddress?.name || 'Customer';
     const customerPhone = order.shippingAddress?.phone;
 
+    // Sent after replying so the delivery panel does not wait for Gmail / SMS
     if (customerEmail) {
-      try { await sendOrderStatusUpdateEmail(order, { email: customerEmail, name: customerName }, 'picked_up', 'delivered'); } catch (e) { console.error(e); }
+      runInBackground('delivered email', () => sendOrderStatusUpdateEmail(order, { email: customerEmail, name: customerName }, 'picked_up', 'delivered'));
     }
     if (customerPhone) {
-      try { await sendOrderStatusSMS(customerPhone, order, 'delivered'); } catch (e) { console.error(e); }
+      runInBackground('delivered SMS', () => sendOrderStatusSMS(customerPhone, order, 'delivered'));
     }
 
     return reply.status(200).send({
