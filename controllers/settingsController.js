@@ -50,6 +50,8 @@ export const updateSettings = async (request, reply) => {
       siteName,
       siteTitle,
       siteDescription,
+      announcement,
+      announcementEnabled,
       contactEmail,
       contactNumber,
       companyAddress,
@@ -95,6 +97,8 @@ export const updateSettings = async (request, reply) => {
     if (siteName !== undefined) settings.siteName = siteName;
     if (siteTitle !== undefined) settings.siteTitle = siteTitle;
     if (siteDescription !== undefined) settings.siteDescription = siteDescription;
+    if (announcement !== undefined) settings.announcement = String(announcement).trim();
+    if (typeof announcementEnabled !== 'undefined') settings.announcementEnabled = announcementEnabled;
     if (contactEmail !== undefined) settings.contactEmail = contactEmail;
     if (contactNumber !== undefined) settings.contactNumber = contactNumber;
     if (companyAddress !== undefined) settings.companyAddress = companyAddress;

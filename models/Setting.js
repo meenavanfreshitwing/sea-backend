@@ -33,6 +33,15 @@ const settingSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  // Announcement shown at the top of the website and app (one line per row)
+  announcement: {
+    type: String,
+    default: ''
+  },
+  announcementEnabled: {
+    type: Boolean,
+    default: false
+  },
   contactEmail: {
     type: String,
     default: 'contact@example.com'
@@ -149,6 +158,8 @@ settingSchema.statics.getPublicSettings = async function() {
     siteName: settings.siteName,
     siteTitle: settings.siteTitle,
     siteDescription: settings.siteDescription,
+    // Only sent when switched on, so the website/app just check for text
+    announcement: settings.announcementEnabled ? settings.announcement : '',
     contactEmail: settings.contactEmail,
     contactNumber: settings.contactNumber,
     companyAddress: settings.companyAddress,
