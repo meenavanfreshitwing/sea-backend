@@ -25,6 +25,17 @@ const orderSchema = new mongoose.Schema({
     weightUnit: { type: String, default: 'gram' }
   }],
 
+  // Add-ons (masala etc.) — name & price copied at order time
+  addons: [{
+    addon: { type: mongoose.Schema.Types.ObjectId, ref: 'Addon' },
+    name: { type: String, required: true },
+    categoryName: { type: String, default: '' },
+    price: { type: Number, required: true },
+    quantity: { type: Number, required: true, min: 1 },
+    image: { type: String, default: null }
+  }],
+  addonsAmount: { type: Number, default: 0 },
+
   // Shipping
   shippingAddress: {
     name:  { type: String, required: false, default: '' },
@@ -54,6 +65,10 @@ const orderSchema = new mongoose.Schema({
     // ✅ Landmark hint for driver ("Near Anjaneyar Kovil")
     landmark: { type: String, default: '' }
   },
+
+  // Delivery location the order was priced for (from the shipping pincode)
+  location: { type: mongoose.Schema.Types.ObjectId, ref: 'Location', default: null, index: true },
+  locationName: { type: String, default: '' },
 
   // Ward Info
   wardId: { type: mongoose.Schema.Types.Mixed },

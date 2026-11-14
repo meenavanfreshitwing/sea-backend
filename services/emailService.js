@@ -5,6 +5,14 @@ import Setting from '../models/Setting.js';
 
 dotenv.config({ quiet: true });
 
+// Fish lines followed by add-on lines (masala etc.) for order emails
+const emailLines = (order) => [
+  ...(order.products || []),
+  ...(order.addons || []).map(a => ({
+    name: `${a.name} (add-on)`, variantName: '', quantity: a.quantity, price: a.price, weight: 0
+  }))
+];
+
 // ============================================
 // 🎯 SENDER NAME — Dynamic from Settings
 // ============================================
@@ -139,7 +147,7 @@ export const sendOrderConfirmationEmail = async (order, customerInfo) => {
       return { success: false, message: 'No email address found' };
     }
 
-    const itemsHtml = order.products.map(item => {
+    const itemsHtml = emailLines(order).map(item => {
       const weightDisplay = item.weight && item.weight > 0
         ? `${item.weight}${item.weightUnit === 'gram' ? 'g' : item.weightUnit === 'kg' ? 'kg' : item.weightUnit}`
         : '-';
@@ -257,7 +265,7 @@ export const sendOrderStatusUpdateEmail = async (order, customerInfo, oldStatus,
       return { success: false, message: 'No email address found' };
     }
 
-    const itemsHtml = order.products.map(item => {
+    const itemsHtml = emailLines(order).map(item => {
       const weightDisplay = item.weight && item.weight > 0
         ? `${item.weight}${item.weightUnit === 'gram' ? 'g' : item.weightUnit === 'kg' ? 'kg' : item.weightUnit}`
         : '-';
@@ -378,7 +386,7 @@ export const sendOrderCancellationEmail = async (order, customerInfo, cancellati
       return { success: false, message: 'No email address found' };
     }
 
-    const itemsHtml = order.products.map(item => {
+    const itemsHtml = emailLines(order).map(item => {
       const weightDisplay = item.weight && item.weight > 0
         ? `${item.weight}${item.weightUnit === 'gram' ? 'g' : item.weightUnit === 'kg' ? 'kg' : item.weightUnit}`
         : '-';
@@ -477,7 +485,7 @@ export const sendOrderRefundEmail = async (order, customerInfo, refundAmount, re
       return { success: false, message: 'No email address found' };
     }
 
-    const itemsHtml = order.products.map(item => {
+    const itemsHtml = emailLines(order).map(item => {
       const weightDisplay = item.weight && item.weight > 0
         ? `${item.weight}${item.weightUnit === 'gram' ? 'g' : item.weightUnit === 'kg' ? 'kg' : item.weightUnit}`
         : '-';

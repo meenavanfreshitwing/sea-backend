@@ -45,6 +45,13 @@ const userSchema = new mongoose.Schema({
   isActive: {
     type: Boolean,
     default: true
+  },
+
+  // Location chosen on the "Set your location" screen (decides which prices they see)
+  savedLocation: {
+    location: { type: mongoose.Schema.Types.ObjectId, ref: 'Location', default: null },
+    pincode: { type: String, default: '' },
+    place: { type: String, default: '' }
   }
 }, {
   timestamps: true

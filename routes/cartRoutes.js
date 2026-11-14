@@ -5,7 +5,8 @@ import {
   updateCartItem,
   removeFromCart,
   clearCart,
-  clearGuestCart
+  clearGuestCart,
+  setCartAddon
 } from '../controllers/cartController.js';
 import { requireAuth, requireStrictAuth } from '../controllers/authController.js';
 
@@ -20,6 +21,8 @@ fastify.delete('/cart/guest', clearGuestCart);
   fastify.put('/cart/items/:itemId', { preHandler: requireAuth }, updateCartItem);
   fastify.delete('/cart/items/:itemId', { preHandler: requireAuth }, removeFromCart);
   fastify.delete('/cart', { preHandler: requireAuth }, clearCart);
+  // Add-ons (masala etc.) picked at checkout
+  fastify.put('/cart/addons', { preHandler: requireAuth }, setCartAddon);
   
   // Protected routes (require authentication for merging)
   fastify.post('/cart/merge', { preHandler: requireStrictAuth }, mergeCart);

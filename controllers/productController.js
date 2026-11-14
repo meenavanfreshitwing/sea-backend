@@ -2,6 +2,24 @@ import Product from '../models/productModel.js';
 import Category from '../models/Category.js';
 import mongoose from 'mongoose';
 import { deleteFromR2 } from '../middleware/uploadMiddleware.js';
+import { applyLocationToProduct, applyLocationToProducts, normalizeLocationPrices } from '../services/locationPricing.js';
+import { getRequestLocation, publicLocation } from '../services/locationService.js';
+
+const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
+
+// Clean per-location prices on each pack sent by the admin panel
+const withCleanVariantLocationPrices = (variants) =>
+    (variants || []).map(v => (
+        v && v.locationPrices !== undefined
+            ? { ...v, locationPrices: normalizeLocationPrices(v.locationPrices, isValidObjectId) }
+            : v
+    ));
+
+// Price products for the customer's location (?location= / X-Location). No location → unchanged.
+const priceForRequest = async (request, products) => {
+    const location = await getRequestLocation(request);
+    return { location, products: location ? applyLocationToProducts(products, location._id) : products };
+};
 
 // Helper function to delete image files from R2
 const deleteImageFile = async (imagePath) => {
@@ -53,11 +71,12 @@ export const getAllProducts = async (request, reply) => {
         const sortConfig = {};
         sortConfig[sortBy] = sortOrder === 'desc' ? -1 : 1;
 
-        const products = await Product.find(filter)
+        const found = await Product.find(filter)
             .populate('category', 'name slug')
             .sort(sortConfig);
 
-        return reply.status(200).send({ success: true, count: products.length, data: products });
+        const { location, products } = await priceForRequest(request, found);
+        return reply.status(200).send({ success: true, count: products.length, data: products, location: publicLocation(location) });
     } catch (error) {
         console.error('Get all products error:', error);
         return reply.status(500).send({ success: false, message: error.message });
@@ -78,7 +97,10 @@ export const getProductById = async (request, reply) => {
             return reply.status(404).send({ success: false, message: 'Product not found.' });
         }
 
-        return reply.status(200).send({ success: true, data: product });
+        // isAvailableInLocation=false → app shows "Not available in your area"
+        const location = await getRequestLocation(request);
+        const data = location ? applyLocationToProduct(product, location._id) : product;
+        return reply.status(200).send({ success: true, data, location: publicLocation(location) });
     } catch (error) {
         return reply.status(500).send({ success: false, message: error.message });
     }
@@ -94,7 +116,9 @@ export const getProductBySlug = async (request, reply) => {
             return reply.status(404).send({ success: false, message: 'Product not found.' });
         }
 
-        return reply.status(200).send({ success: true, data: product });
+        const location = await getRequestLocation(request);
+        const data = location ? applyLocationToProduct(product, location._id) : product;
+        return reply.status(200).send({ success: true, data, location: publicLocation(location) });
     } catch (error) {
         return reply.status(500).send({ success: false, message: error.message });
     }
@@ -171,10 +195,10 @@ export const createProduct = async (request, reply) => {
 
         console.log('🔍 Variant images map:', variantImagesMap);
 
-        parsedVariants = parsedVariants.map((variant, index) => ({
+        parsedVariants = withCleanVariantLocationPrices(parsedVariants.map((variant, index) => ({
             ...variant,
             images: variantImagesMap[index] || variant.images || []
-        }));
+        })));
 
         // Calculate total stock
         const totalStock = parsedVariants.length > 0
@@ -221,6 +245,7 @@ export const createProduct = async (request, reply) => {
             specifications: parsedSpecifications,
             keyFeatures: parsedKeyFeatures,
             variants: parsedVariants,
+            locationPrices: normalizeLocationPrices(productData.locationPrices, isValidObjectId),
             images: mainImages,
             metaTitle: productData.metaTitle || '',
             metaDescription: productData.metaDescription || '',
@@ -394,7 +419,18 @@ export const updateProduct = async (request, reply) => {
                 };
             });
 
-            existingProduct.variants = parsedVariants;
+            // Older admin builds don't send locationPrices: keep each pack's existing ones
+            parsedVariants = parsedVariants.map(variant => {
+                if (variant.locationPrices !== undefined || !variant._id) return variant;
+                const old = (existingProduct.variants || []).find(o => o._id?.toString() === String(variant._id));
+                return old ? { ...variant, locationPrices: (old.locationPrices || []).map(lp => lp.toObject ? lp.toObject() : lp) } : variant;
+            });
+
+            existingProduct.variants = withCleanVariantLocationPrices(parsedVariants);
+        }
+
+        if (updateData.locationPrices !== undefined) {
+            existingProduct.locationPrices = normalizeLocationPrices(updateData.locationPrices, isValidObjectId);
         }
 
         // 🎯 Update all fields INCLUDING slug — the model will uniquify it
@@ -542,12 +578,13 @@ export const getFeaturedProducts = async (request, reply) => {
         const finalFilter = { ...filter, ...priceFilter };
         const sortConfig = { [sortBy]: sortOrder === 'desc' ? -1 : 1 };
 
-        const products = await Product.find(finalFilter)
+        const found = await Product.find(finalFilter)
             .populate('category', 'name slug')
             .sort(sortConfig)
             .lean();
 
-        return reply.status(200).send({ success: true, count: products.length, data: products });
+        const { location, products } = await priceForRequest(request, found);
+        return reply.status(200).send({ success: true, count: products.length, data: products, location: publicLocation(location) });
     } catch (error) {
         console.error('Featured products error:', error);
         return reply.status(500).send({ success: false, message: error.message });
@@ -590,7 +627,7 @@ export const getFilteredFeaturedProducts = async (request, reply) => {
         const sortConfig = { [sortBy]: sortOrder === 'desc' ? -1 : 1 };
         const skip = (parseInt(page) - 1) * parseInt(limit);
 
-        const [products, totalCount] = await Promise.all([
+        const [found, totalCount] = await Promise.all([
             Product.find(filter)
                 .populate('category', 'name slug')
                 .sort(sortConfig)
@@ -599,10 +636,12 @@ export const getFilteredFeaturedProducts = async (request, reply) => {
                 .lean(),
             Product.countDocuments(filter)
         ]);
+        const { location, products } = await priceForRequest(request, found);
 
         return reply.status(200).send({
             success: true,
             data: products,
+            location: publicLocation(location),
             pagination: {
                 currentPage: parseInt(page),
                 totalPages: Math.ceil(totalCount / parseInt(limit)),
@@ -641,14 +680,16 @@ export const searchProducts = async (request, reply) => {
         const sortConfig = { [sortBy]: sortOrder === 'desc' ? -1 : 1 };
         const skip = (parseInt(page) - 1) * parseInt(limit);
 
-        const [products, totalCount] = await Promise.all([
+        const [found, totalCount] = await Promise.all([
             Product.find(filter).populate('category', 'name slug').sort(sortConfig).skip(skip).limit(parseInt(limit)).lean(),
             Product.countDocuments(filter)
         ]);
+        const { location, products } = await priceForRequest(request, found);
 
         return reply.status(200).send({
             success: true,
             data: products,
+            location: publicLocation(location),
             count: products.length,
             totalCount,
             pagination: {
@@ -671,14 +712,15 @@ export const quickSearchProducts = async (request, reply) => {
             return reply.status(200).send({ success: true, data: [] });
         }
 
-        const products = await Product.find({
+        const found = await Product.find({
             name: { $regex: searchQuery.trim(), $options: 'i' },
             status: 'active'
         })
-            .select('name slug basePrice images ogImage category featured variants')
+            .select('name slug basePrice originalPrice locationPrices images ogImage category featured variants')
             .populate('category', 'name slug')
             .limit(parseInt(limit))
             .lean();
+        const { products } = await priceForRequest(request, found);
 
         const formattedProducts = products.map(product => ({
             _id: product._id,
@@ -723,11 +765,15 @@ export const getOfferProducts = async (request, reply) => {
             default: sortConfig = { discountPercentage: -1 };
         }
 
-        const products = await Product.find(filter)
+        const found = await Product.find(filter)
             .populate('category', 'name slug')
             .sort(sortConfig)
             .limit(parseInt(limit))
             .lean();
+
+        // A location price can remove the offer (e.g. no MRP set for that location)
+        const priced = await priceForRequest(request, found);
+        const products = priced.location ? priced.products.filter(p => p.hasOffer) : priced.products;
 
         const formattedProducts = products.map(product => ({
             ...product,

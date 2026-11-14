@@ -425,8 +425,11 @@ export const getProfile = async (request, reply) => {
   try {
     await request.jwtVerify();
     
-    const user = await User.findById(request.user.userId).select('-__v -password');
-    
+    const user = await User.findById(request.user.userId)
+      .select('-__v -password')
+      .populate('savedLocation.location', 'name slug isActive');
+    const savedLoc = user?.savedLocation?.location;
+
     if (!user) {
       return reply.status(404).send({
         success: false,
@@ -444,10 +447,18 @@ export const getProfile = async (request, reply) => {
         name: user.name,
         isActive: user.isActive,
         createdAt: user.createdAt,
-        lastLogin: user.lastLogin
+        lastLogin: user.lastLogin,
+        // null → the app shows the "Set your location" screen
+        savedLocation: savedLoc && savedLoc.isActive
+          ? {
+              location: { _id: savedLoc._id, name: savedLoc.name, slug: savedLoc.slug },
+              pincode: user.savedLocation.pincode,
+              place: user.savedLocation.place
+            }
+          : null
       }
     });
-    
+
   } catch (error) {
     return reply.status(401).send({
       success: false,

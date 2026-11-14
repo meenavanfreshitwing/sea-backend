@@ -1,6 +1,90 @@
 import Cart from '../models/Cart.js';
 import Product from '../models/productModel.js';
 import mongoose from 'mongoose';
+import Addon from '../models/Addon.js';
+import { isAddonAvailable } from '../services/addonService.js';
+import { findVariant, resolveItemPrice } from '../services/locationPricing.js';
+import { findActiveLocation, getRequestLocation, isLocationPricingEnabled } from '../services/locationService.js';
+
+// Keep the cart's add-ons in line with the admin's settings: drop ones turned off or
+// out of stock, update changed names/prices, and cap quantities at the stock left.
+// Returns the names of removed add-ons (shown once on the cart page).
+const refreshCartAddons = async (cart) => {
+  if (!cart.addons?.length) return [];
+  const ids = cart.addons.map(a => a.addon);
+  const docs = await Addon.find({ _id: { $in: ids } }).populate('category', 'name isActive').lean();
+  const byId = new Map(docs.map(d => [d._id.toString(), d]));
+  const removed = [];
+  cart.addons = cart.addons.filter(line => {
+    const doc = byId.get(line.addon.toString());
+    if (!isAddonAvailable(doc)) {
+      removed.push(line.name || 'Add-on');
+      return false;
+    }
+    if (line.price !== doc.price) line.price = doc.price;
+    if (line.name !== doc.name) line.name = doc.name;
+    if (line.categoryName !== doc.category.name) line.categoryName = doc.category.name;
+    if ((line.image || null) !== (doc.image || null)) line.image = doc.image || null;
+    if (line.quantity > doc.stock) line.quantity = doc.stock;
+    return true;
+  });
+  return removed;
+};
+
+const recalcTotals = (cart) => {
+  cart.totalItems = cart.items.reduce((sum, item) => sum + item.quantity, 0);
+  cart.totalPrice = cart.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+  cart.totalOriginalPrice = cart.items.reduce((sum, item) => sum + ((item.originalPrice || item.price) * item.quantity), 0);
+  cart.totalSavings = cart.totalOriginalPrice - cart.totalPrice;
+};
+
+// Which location this cart is priced for: the one the app sent now, else the one saved
+// on the cart (if still active). Updates cart.location. Returns the location id or null.
+const pickCartLocation = async (request, cart) => {
+  const requested = await getRequestLocation(request);
+  if (requested) {
+    if (String(cart.location || '') !== String(requested._id)) cart.location = requested._id;
+    return requested._id;
+  }
+  if (cart.location) {
+    const still = await findActiveLocation(cart.location);
+    if (!still) cart.location = null;
+    return still?._id || null;
+  }
+  return null;
+};
+
+// Re-price every cart item from the database for a location; drop items not sold there.
+// Returns { pricesUpdated, removedItems } for the "Prices updated for your location" message.
+const repriceCart = async (cart, locationId) => {
+  const idOfItemProduct = (item) => (item.product?._id || item.product)?.toString();
+  const ids = [...new Set(cart.items.map(idOfItemProduct).filter(Boolean))];
+  const products = await Product.find({ _id: { $in: ids } }).lean();
+  const byId = new Map(products.map(p => [p._id.toString(), p]));
+
+  const removedItems = [];
+  let pricesUpdated = false;
+  cart.items = cart.items.filter(item => {
+    const product = byId.get(idOfItemProduct(item));
+    if (!product) return true; // missing products are handled by getCart / checkout
+    const variant = findVariant(product, item.variantId, item.variantName);
+    if (product.variants?.length && item.variantId && !variant) return true;
+
+    const priced = resolveItemPrice(product, variant, locationId);
+    if (!priced.isAvailable) {
+      removedItems.push(`${item.productName || product.name}${item.variantName ? ` (${item.variantName})` : ''}`);
+      return false;
+    }
+    if (item.price !== priced.price) {
+      item.price = priced.price;
+      pricesUpdated = true;
+    }
+    item.originalPrice = priced.originalPrice;
+    return true;
+  });
+  recalcTotals(cart);
+  return { pricesUpdated, removedItems };
+};
 
 // Helper function to get product details
 const getProductDetails = async (productId, variantId) => {
@@ -119,7 +203,24 @@ export const addToCart = async (request, reply) => {
     } else {
       console.log('Found existing cart:', cart._id);
     }
-    
+
+    // Location price (falls back to the default price when the location has no override)
+    let selectedOriginalPrice = selectedPrice;
+    const locationPricing = isLocationPricingEnabled();
+    if (locationPricing) {
+      const locationId = await pickCartLocation(request, cart);
+      const priced = resolveItemPrice(product, selectedVariant, locationId);
+      if (!priced.isAvailable) {
+        return reply.status(400).send({
+          success: false,
+          code: 'NOT_AVAILABLE_IN_LOCATION',
+          message: `${product.name}${variantName ? ` (${variantName})` : ''} is not available in your location`
+        });
+      }
+      selectedPrice = priced.price;
+      selectedOriginalPrice = priced.originalPrice;
+    }
+
     let finalProductImage = '';
     if (variantImage) {
       finalProductImage = variantImage;
@@ -142,6 +243,7 @@ export const addToCart = async (request, reply) => {
       console.log('Updating existing item at index:', existingItemIndex);
       cart.items[existingItemIndex].quantity = quantity;
       cart.items[existingItemIndex].price = selectedPrice;
+      if (locationPricing) cart.items[existingItemIndex].originalPrice = selectedOriginalPrice;
       if (finalProductImage) {
         cart.items[existingItemIndex].productImage = finalProductImage;
       }
@@ -162,7 +264,7 @@ export const addToCart = async (request, reply) => {
         product: productId,
         quantity,
         price: selectedPrice,
-        originalPrice: selectedPrice,
+        originalPrice: selectedOriginalPrice,
         variantId: variantId || '',
         variantName: variantName,
         productName: product.name,
@@ -175,11 +277,14 @@ export const addToCart = async (request, reply) => {
       cart.items.push(newItem);
     }
     
-    cart.totalItems = cart.items.reduce((sum, item) => sum + item.quantity, 0);
-    cart.totalPrice = cart.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-    cart.totalOriginalPrice = cart.items.reduce((sum, item) => sum + ((item.originalPrice || item.price) * item.quantity), 0);
-    cart.totalSavings = cart.totalOriginalPrice - cart.totalPrice;
-    
+    // The location may have changed: re-price the items already in the cart too
+    let pricing = { pricesUpdated: false, removedItems: [] };
+    if (locationPricing) {
+      pricing = await repriceCart(cart, cart.location);
+    } else {
+      recalcTotals(cart);
+    }
+
     await cart.save();
     console.log('Cart saved with', cart.items.length, 'items');
     
@@ -204,7 +309,9 @@ export const addToCart = async (request, reply) => {
     return reply.status(200).send({
       success: true,
       data: cart,
-      guestId: guestId
+      guestId: guestId,
+      pricesUpdated: pricing.pricesUpdated,
+      ...(pricing.removedItems.length ? { removedItems: pricing.removedItems } : {})
     });
     
   } catch (error) {
@@ -298,6 +405,22 @@ export const getCart = async (request, reply) => {
       await cart.save();
     }
 
+    // Location prices: re-price for the location the app sent (or the cart's saved one).
+    // Also picks up price changes the admin made after the item was added.
+    let pricesUpdated = false;
+    if (isLocationPricingEnabled()) {
+      const locationId = await pickCartLocation(request, cart);
+      const pricing = await repriceCart(cart, locationId);
+      pricesUpdated = pricing.pricesUpdated;
+      removedItems.push(...pricing.removedItems);
+      if (cart.isModified()) await cart.save();
+    }
+
+    // Add-ons: drop ones the admin turned off / sold out, refresh prices
+    const removedAddons = await refreshCartAddons(cart);
+    if (removedAddons.length || cart.isModified()) await cart.save();
+    removedItems.push(...removedAddons);
+
     // Enrich cart items with variant images
     for (const item of cart.items) {
       console.log(`\nProcessing cart item ${item._id}:`);
@@ -335,6 +458,7 @@ export const getCart = async (request, reply) => {
     
     const data = cart.toObject();
     if (removedItems.length) data.removedItems = removedItems; // shown once on the cart page
+    if (pricesUpdated) data.pricesUpdated = true;              // "Prices updated for your location"
 
     return reply.status(200).send({
       success: true,
@@ -411,11 +535,22 @@ export const mergeCart = async (request, reply) => {
       }
     }
 
-    // Recalculate totals
-    userCart.totalItems = userCart.items.reduce((sum, item) => sum + item.quantity, 0);
-    userCart.totalPrice = userCart.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-    userCart.totalOriginalPrice = userCart.items.reduce((sum, item) => sum + ((item.originalPrice || item.price) * item.quantity), 0);
-    userCart.totalSavings = userCart.totalOriginalPrice - userCart.totalPrice;
+    // Merge add-ons picked as a guest, then re-check them (stock / turned off)
+    for (const guestAddon of guestCart.addons || []) {
+      const existing = userCart.addons.find(a => String(a.addon) === String(guestAddon.addon));
+      if (existing) existing.quantity += guestAddon.quantity;
+      else userCart.addons.push(guestAddon.toObject ? guestAddon.toObject() : guestAddon);
+    }
+    await refreshCartAddons(userCart);
+
+    // Recalculate totals (with location prices: the guest's location wins, it is the latest choice)
+    if (isLocationPricingEnabled()) {
+      if (guestCart.location) userCart.location = guestCart.location;
+      const locationId = await pickCartLocation(request, userCart);
+      await repriceCart(userCart, locationId);
+    } else {
+      recalcTotals(userCart);
+    }
 
     await userCart.save();
     
@@ -690,5 +825,59 @@ export const clearGuestCart = async (request, reply) => {
       success: false,
       message: error.message
     });
+  }
+};
+// PUT /api/cart/addons  { addonId, quantity, guestId? }
+// Sets how many of one add-on are in the cart (quantity 0 removes it).
+// Add-ons are only sold with fish, so the cart must have at least one fish.
+export const setCartAddon = async (request, reply) => {
+  try {
+    const userId = request.user?.id || request.user?.userId || request.user?._id;
+    const { addonId, guestId } = request.body || {};
+    const quantity = parseInt(request.body?.quantity, 10);
+
+    if (!mongoose.Types.ObjectId.isValid(addonId)) {
+      return reply.status(400).send({ success: false, message: 'Invalid add-on' });
+    }
+    if (isNaN(quantity) || quantity < 0) {
+      return reply.status(400).send({ success: false, message: 'Quantity must be 0 or more' });
+    }
+
+    let cart = null;
+    if (userId) cart = await Cart.findOne({ user: userId });
+    else if (guestId) cart = await Cart.findOne({ guestId });
+    if (!cart || !cart.items.length) {
+      return reply.status(400).send({ success: false, code: 'CART_EMPTY', message: 'Add fish to your cart first' });
+    }
+
+    const index = cart.addons.findIndex(a => String(a.addon) === String(addonId));
+    if (quantity === 0) {
+      if (index > -1) cart.addons.splice(index, 1);
+    } else {
+      const addon = await Addon.findById(addonId).populate('category', 'name isActive').lean();
+      if (!isAddonAvailable(addon)) {
+        return reply.status(400).send({ success: false, code: 'ADDON_UNAVAILABLE', message: `${addon?.name || 'This add-on'} is not available right now` });
+      }
+      if (addon.stock < quantity) {
+        return reply.status(400).send({ success: false, code: 'ADDON_OUT_OF_STOCK', message: `Only ${addon.stock} ${addon.name} left` });
+      }
+      const line = {
+        addon: addon._id,
+        name: addon.name,
+        categoryName: addon.category.name,
+        price: addon.price,
+        quantity,
+        image: addon.image || null
+      };
+      if (index > -1) Object.assign(cart.addons[index], line);
+      else cart.addons.push(line);
+    }
+
+    await cart.save(); // totals (incl. add-ons) are worked out by the Cart model
+    await cart.populate('items.product', 'name basePrice images slug stock seller variants');
+    return reply.send({ success: true, data: cart });
+  } catch (error) {
+    console.error('Set cart add-on error:', error);
+    return reply.status(500).send({ success: false, message: error.message });
   }
 };

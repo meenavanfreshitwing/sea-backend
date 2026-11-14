@@ -299,7 +299,7 @@ export const getDeliverySummary = async (request, reply) => {
     if (pendingOnly) filter.orderStatus = { $nin: ['cancelled', 'delivered'] };
 
     const orders = await Order.find(filter)
-      .select('orderId deliveryDate orderStatus paymentMethod paymentStatus finalAmount products')
+      .select('orderId deliveryDate orderStatus paymentMethod paymentStatus finalAmount products addons')
       .lean();
 
     const productIds = [...new Set(orders.flatMap(o => (o.products || []).map(i => String(i.product))).filter(id => mongoose.Types.ObjectId.isValid(id)))];

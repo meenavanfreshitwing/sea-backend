@@ -6,6 +6,9 @@ import Cart from '../models/Cart.js';
 import Product from '../models/productModel.js';
 import Setting from '../models/Setting.js';
 import User from '../models/User.js';
+import { findVariant, resolveItemPrice } from '../services/locationPricing.js';
+import { addonsTotal, priceAddonLines, reduceAddonStock, restoreAddonStock } from '../services/addonService.js';
+import { isLocationPricingEnabled, resolveOrderLocation } from '../services/locationService.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -446,11 +449,32 @@ export const createOrder = async (request, reply) => {
       return reply.status(400).send({ success: false, code: booking.code, message: booking.message });
     }
 
+    // Location pricing: the delivery pincode decides which location's prices apply
+    let orderLocation = null;
+    if (isLocationPricingEnabled()) {
+      const check = await resolveOrderLocation(request, shippingAddress.postalCode);
+      if (!check.ok) {
+        return reply.status(check.status).send({
+          success: false, code: check.code, message: check.message,
+          ...(check.location ? { location: check.location } : {})
+        });
+      }
+      orderLocation = check.location;
+    }
+    const notSoldHere = (name) => reply.status(400).send({
+      success: false,
+      code: 'NOT_AVAILABLE_IN_LOCATION',
+      message: `${name} is not available in ${orderLocation?.name || 'your location'}. Please remove it from your cart.`
+    });
+
     let totalAmount = 0;
     let products = [];
+    // Add-ons: from the body for Buy Now ([{ addon, quantity }]), from the cart otherwise
+    let requestedAddons = [];
 
     if (skipCartClear && bodyProducts && bodyProducts.length > 0) {
       console.log(`🛒 Buy Now mode - ${bodyProducts.length} products`);
+      requestedAddons = Array.isArray(request.body.addons) ? request.body.addons : [];
 
       for (const item of bodyProducts) {
         const product = await Product.findById(item.product);
@@ -458,16 +482,25 @@ export const createOrder = async (request, reply) => {
           return reply.status(404).send({ success: false, message: `Product not found: ${item.product}` });
         }
 
-        const price = item.price;
-        const variantId = item.variantId;
-        const variantName = item.variantName || '';
+        // Price always comes from the database (for the delivery location), never from the app
         let variant = null;
-        let originalPrice = price;
-
-        if (variantId && product.variants && product.variants.length > 0) {
-          variant = product.variants.find(v => v._id.toString() === variantId);
-          if (variant) originalPrice = variant.originalPrice || variant.price || price;
+        if (product.variants && product.variants.length > 0) {
+          variant = findVariant(product, item.variantId, item.variantName);
+          if (!variant) {
+            return reply.status(400).send({
+              success: false,
+              code: 'PACK_UNAVAILABLE',
+              message: `"${product.name}${item.variantName ? ` (${item.variantName})` : ''}" is no longer available. Please choose the pack again.`
+            });
+          }
         }
+        const variantId = variant ? variant._id.toString() : item.variantId;
+        const variantName = variant ? variant.variantName : (item.variantName || '');
+
+        const priced = resolveItemPrice(product, variant, orderLocation?._id);
+        if (!priced.isAvailable) return notSoldHere(`${product.name}${variantName ? ` (${variantName})` : ''}`);
+        const price = priced.price;
+        const originalPrice = priced.originalPrice;
 
         if (variant && variant.stock < item.quantity) {
           return reply.status(400).send({ success: false, message: `Insufficient stock for ${product.name} - ${variantName}` });
@@ -497,6 +530,7 @@ export const createOrder = async (request, reply) => {
       if (!cart || cart.items.length === 0) {
         return reply.status(400).send({ success: false, message: 'Cart is empty' });
       }
+      requestedAddons = cart.addons || [];
 
       for (const item of cart.items) {
         const product = await Product.findById(item.product._id);
@@ -506,6 +540,7 @@ export const createOrder = async (request, reply) => {
 
         let itemWeight = item.weight || 0;
         let itemWeightUnit = item.weightUnit || 'gram';
+        let variant = null;
 
         if (product.variants && product.variants.length > 0) {
           const hasVariant = (item.variantId && item.variantId !== '' && item.variantId !== 'null') ||
@@ -514,7 +549,6 @@ export const createOrder = async (request, reply) => {
             return reply.status(400).send({ success: false, message: `Please select a variant for ${product.name}` });
           }
 
-          let variant = null;
           if (item.variantId && item.variantId !== 'null') {
             variant = product.variants.find(v => v._id.toString() === item.variantId);
           }
@@ -543,14 +577,22 @@ export const createOrder = async (request, reply) => {
           }
         }
 
-        const itemPrice = item.price || product.basePrice;
+        // Price from the database for the delivery location (the cart price may be stale or
+        // for another location). Without location pricing this keeps the cart price, as before.
+        let itemPrice = item.price || product.basePrice;
+        let originalPrice = item.originalPrice || itemPrice;
+        if (isLocationPricingEnabled()) {
+          const priced = resolveItemPrice(product, variant, orderLocation?._id);
+          if (!priced.isAvailable) return notSoldHere(`${product.name}${item.variantName ? ` (${item.variantName})` : ''}`);
+          itemPrice = priced.price;
+          originalPrice = priced.originalPrice;
+        }
         const itemTotal = item.quantity * itemPrice;
         totalAmount += itemTotal;
 
         const productImage = product.images && product.images.length > 0 ? product.images[0].image : product.ogImage || null;
 
         let discountPercentage = 0;
-        let originalPrice = item.originalPrice || itemPrice;
         if (originalPrice > itemPrice) discountPercentage = Math.round(((originalPrice - itemPrice) / originalPrice) * 100);
 
         products.push({
@@ -567,6 +609,15 @@ export const createOrder = async (request, reply) => {
     if (isNaN(totalAmount) || totalAmount <= 0) {
       return reply.status(400).send({ success: false, message: 'Invalid order total calculated' });
     }
+
+    // Add-ons: price & availability from the database (turned off / sold out → refused)
+    const pricedAddons = await priceAddonLines(requestedAddons);
+    if (pricedAddons.error) {
+      return reply.status(400).send({ success: false, code: pricedAddons.code, message: pricedAddons.error });
+    }
+    const orderAddons = pricedAddons.lines;
+    const addonsAmount = addonsTotal(orderAddons);
+    totalAmount += addonsAmount;
 
     const shippingFee = 0;
     // Tax on the subtotal, in percent. No tax by default; set TAX_RATE (e.g. 5) in the env to charge it.
@@ -636,6 +687,8 @@ export const createOrder = async (request, reply) => {
         locationSource: locationSource,
         landmark: (landmark || '').trim().slice(0, 200)
       },
+      location: orderLocation?._id || null,
+      locationName: orderLocation?.name || '',
       wardId: wardInfo.wardId,
       wardName: wardInfo.wardName,
       deliveryZone: wardInfo.deliveryZone,
@@ -650,6 +703,8 @@ export const createOrder = async (request, reply) => {
       shippingFee: Number(shippingFee.toFixed(2)),
       taxAmount: Number(taxAmount.toFixed(2)),
       discountAmount: Number(discountAmount.toFixed(2)),
+      addons: orderAddons,
+      addonsAmount: Number(addonsAmount.toFixed(2)),
       finalAmount: Number(finalAmount.toFixed(2))
     });
 
@@ -659,6 +714,7 @@ export const createOrder = async (request, reply) => {
 
     if (paymentMethod === 'cod') {
       await updateProductStock(products);
+      await reduceAddonStock(orderAddons);
       order.orderStatus = 'confirmed';
       await order.save();
     }
@@ -666,7 +722,7 @@ export const createOrder = async (request, reply) => {
     if (!skipCartClear && cartOwner) {
       await Cart.findOneAndUpdate(
         cartOwner,
-        { $set: { items: [], totalItems: 0, totalPrice: 0, totalOriginalPrice: 0, totalSavings: 0 } }
+        { $set: { items: [], addons: [], addonsTotal: 0, totalItems: 0, totalPrice: 0, totalOriginalPrice: 0, totalSavings: 0 } }
       );
       console.log(`🗑️ Cart cleared`);
     }
@@ -694,6 +750,8 @@ export const createOrder = async (request, reply) => {
         sNo: order.sNo,
         name: order.name,
         products: order.products,
+        addons: order.addons,
+        addonsAmount: order.addonsAmount,
         shippingAddress: order.shippingAddress,
         wardId: order.wardId,
         wardName: order.wardName,
@@ -865,6 +923,7 @@ export const updateOrderStatus = async (request, reply) => {
         order.cancelledAt = new Date();
         if (cancellationReason) order.cancellationReason = cancellationReason;
         await restoreProductStock(order.products);
+        await restoreAddonStock(order.addons);
         order.deliveryStatus = 'unassigned';
         order.deliveryBoy = null;
         order.deliveryAssignedAt = null;
@@ -951,7 +1010,7 @@ export const printOrderReceipt = async (request, reply) => {
         total: (item.quantity * item.price).toFixed(2),
         variantName: item.variantName,
         weight: item.weight || 0, weightUnit: item.weightUnit || 'gram'
-      })),
+      })).concat(addonReceiptItems(order)),
       pricing: { subtotal: order.totalAmount || 0, tax: order.taxAmount || 0, shipping: order.shippingFee || 0, total: order.finalAmount || 0 },
       payment: { method: order.paymentMethod, status: order.paymentStatus, paidAt: order.paidAt }
     };
@@ -960,6 +1019,13 @@ export const printOrderReceipt = async (request, reply) => {
     return reply.status(500).send({ success: false, message: error.message });
   }
 };
+
+// Add-ons as bill lines (PDF / receipt), after the fish
+const addonReceiptItems = (order) => (order.addons || []).map(a => ({
+  name: `${a.name} (add-on)`, quantity: a.quantity, price: a.price,
+  total: (a.quantity * a.price).toFixed(2), variantName: a.categoryName || 'Add-on',
+  weight: 0, weightUnit: 'gram', isAddon: true
+}));
 
 export const printOrderReceiptPDF = async (request, reply) => {
   try {
@@ -1008,7 +1074,7 @@ export const printOrderReceiptPDF = async (request, reply) => {
         variantName: item.variantName,
         weight: item.weight || 0,
         weightUnit: item.weightUnit || 'gram'
-      })),
+      })).concat(addonReceiptItems(order)),
       pricing: {
         subtotal: order.totalAmount || 0,
         tax: order.taxAmount || 0,
@@ -1226,6 +1292,7 @@ export const updateOrderStatusByOrderId = async (request, reply) => {
     if (orderStatus === 'cancelled' && oldStatus !== 'cancelled') {
       order.cancelledAt = new Date();
       await restoreProductStock(order.products);
+      await restoreAddonStock(order.addons);
       order.deliveryStatus = 'unassigned';
       order.deliveryBoy = null;
       order.deliveryAssignedAt = null;
@@ -1294,6 +1361,7 @@ export const cancelOrder = async (request, reply) => {
     if (cancellationReason) order.cancellationReason = cancellationReason;
 
     await restoreProductStock(order.products);
+    await restoreAddonStock(order.addons);
     await order.save();
 
     const customerEmail = order.shippingAddress?.email;

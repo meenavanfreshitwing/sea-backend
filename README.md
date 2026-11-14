@@ -94,3 +94,48 @@ entered in **Admin panel → Settings**.
 - `PUT /api/orders/payment-success|payment-failed` are admin-only manual overrides. Customer payments
   are confirmed by `/payments/verify-payment` and the webhook, both of which check Razorpay signatures.
 - Never commit `.env`. Use a long random `JWT_SECRET` in production.
+
+## Location-wise pricing
+
+Prices can differ per delivery location (e.g. Trichy vs Karaikudi). A location is a list of pincodes,
+not the government district. Packs with no price for a location use their default price.
+
+**Launch order:** add locations + pincodes and set prices in the admin panel → set
+`LOCATION_PRICING_ENABLED=true` → release the new app/website → optionally `LOCATION_REQUIRED_FOR_ORDERS=true`.
+
+| Endpoint | Who | What |
+|---|---|---|
+| `GET /locations` | public | Active locations for the "Set your location" screen |
+| `GET /locations/resolve?pincode=630001` | public | Location serving a pincode, or `404 NOT_SERVICEABLE` |
+| `GET/PUT /auth/location` `{ pincode, place }` | customer | Saved location (also in `GET /auth/profile` as `savedLocation`) |
+| `GET/POST /admin/locations`, `PUT/DELETE /admin/locations/:id` | admin | Manage locations and their pincodes |
+| `GET /admin/locations/:id/prices` | admin | Every product & pack: default price + this location's price |
+| `PUT /admin/locations/:id/prices` `{ items: [{ productId, variantId?, price?, originalPrice?, isAvailable?, clear? }] }` | admin | Bulk price update for one location |
+| `GET /app/version-check?platform=android&version=1.4.0` | public | `forceUpdate` when below `MIN_APP_VERSION_*` |
+
+The website/app send the selected location with product and cart calls as `?location=<slug>`
+or the `X-Location` header (and `location` in the order body). Product create/update also accept
+`locationPrices` on each variant and on the product.
+
+At checkout the **shipping pincode decides the price**; prices sent by the app are ignored.
+Order errors: `NOT_SERVICEABLE`, `LOCATION_MISMATCH` (returns the address's `location` — switch to it,
+reload the cart, retry), `NOT_AVAILABLE_IN_LOCATION`, `APP_UPDATE_REQUIRED`.
+
+## Add-ons (masala etc.)
+
+Admin creates add-on categories (Marination, Curry Masala, Ready-to-Cook Kits…) and add-ons
+(photo, name, description, category, price, stock, on/off). At checkout, when the cart has fish,
+customers see **every** add-on that is ON, in a category that is ON, with stock > 0.
+
+| Endpoint | Who | What |
+|---|---|---|
+| `GET /addons` | public | Add-ons to show at checkout, grouped by category |
+| `PUT /cart/addons` `{ addonId, quantity, guestId? }` | customer | Set an add-on's quantity in the cart (0 removes). Cart must have fish (`CART_EMPTY`) |
+| `GET/POST /admin/addon-categories`, `PUT/DELETE /admin/addon-categories/:id` | admin | Categories (a category with add-ons can't be deleted) |
+| `GET /admin/addons`, `POST /admin/addons`, `PUT/DELETE /admin/addons/:id` | admin | Add-ons; create/update are multipart with an `image` file (`deleteImage=true` removes it) |
+
+Cart responses include `addons` and `addonsTotal`; `totalPrice` includes add-ons. `GET /cart` drops add-ons
+the admin turned off or that ran out (their names come back in `removedItems`) and refreshes prices.
+Orders take add-ons from the cart (or `addons: [{ addon, quantity }]` for Buy Now), price them from the
+database, and save `addons` + `addonsAmount` on the order. Errors: `ADDON_UNAVAILABLE`, `ADDON_OUT_OF_STOCK`.
+Add-on stock goes down with fish stock (COD at order, online on payment) and comes back on cancel.

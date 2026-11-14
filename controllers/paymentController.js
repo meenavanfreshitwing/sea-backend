@@ -10,6 +10,7 @@ import { sendOrderConfirmationEmail } from '../services/emailService.js';
 import { sendOrderConfirmationSMS } from '../services/smsService.js';
 import Product from '../models/productModel.js';
 import { razorpayConfig } from '../utils/razorpayConfig.js';
+import { reduceAddonStock } from '../services/addonService.js';
 
 // Get Razorpay instance (keys from server .env, else Admin → Settings)
 const getRazorpayInstance = async () => {
@@ -242,6 +243,7 @@ export const verifyPayment = async (request, reply) => {
     // ========== UPDATE PRODUCT STOCK AFTER PAYMENT ==========
     try {
       await updateProductStock(order.products);
+      await reduceAddonStock(order.addons);
       console.log(`📦 Stock updated for order ${order.orderId}`);
     } catch (stockError) {
       console.error('Failed to update stock:', stockError);
@@ -652,6 +654,7 @@ export const razorpayWebhook = async (request, reply) => {
 
       try {
         await updateProductStock(order.products);
+        await reduceAddonStock(order.addons);
 
         console.log(
           '📦 Stock updated:',

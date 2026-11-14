@@ -14,6 +14,15 @@ const tamilSafeSlugify = (text) => {
         .replace(/-+$/, '');
 };
 
+// Price for one delivery location. No entry (or price null) → the default price is used.
+// isAvailable=false hides the product/pack in that location.
+const locationPriceSchema = new mongoose.Schema({
+    location: { type: mongoose.Schema.Types.ObjectId, ref: 'Location', required: true },
+    price: { type: Number, min: 0, default: null },
+    originalPrice: { type: Number, min: 0, default: null },
+    isAvailable: { type: Boolean, default: true }
+}, { _id: false });
+
 const productSchema = new mongoose.Schema({
     // Auto Increment Serial No
     sNo: { type: Number, unique: true, index: true },
@@ -45,8 +54,13 @@ const productSchema = new mongoose.Schema({
         isDefault: { type: Boolean, default: false },
         status: { type: String, enum: ['active', 'inactive', 'out-of-stock'], default: 'active' },
         discountPercentage: { type: Number, default: 0 },
-        features: [String]
+        features: [String],
+        locationPrices: { type: [locationPriceSchema], default: [] }
     }],
+
+    // Product-level (card) price per location — for products without packs, or to set
+    // the "from" price on cards. Packs use their own variants[].locationPrices.
+    locationPrices: { type: [locationPriceSchema], default: [] },
     
     // Specifications
     specifications: [{ key: String, value: String }],

@@ -26,6 +26,8 @@ import wardRoutes from './routes/wardRoutes.js';
 import blogRoutes from './routes/blogRoutes.js';
 import bookingRoutes from './routes/bookingRoutes.js';
 import reviewRoutes from './routes/reviewRoutes.js';
+import locationRoutes from './routes/locationRoutes.js';
+import addonRoutes from './routes/addonRoutes.js';
 
 // ✅ ADD THESE IMPORTS FOR DELIVERY BOY
 import deliveryRoutes from './routes/deliveryRoutes.js';
@@ -77,7 +79,7 @@ await fastify.register(cors, {
   origin: allowedOrigins.includes('*') ? true : allowedOrigins,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Location']
 });
 
 await fastify.register(jwt, {
@@ -120,6 +122,8 @@ await fastify.register(wardRoutes, { prefix: '/api' });
 await fastify.register(blogRoutes, { prefix: '/api' });
 await fastify.register(bookingRoutes, { prefix: '/api' });
 await fastify.register(reviewRoutes, { prefix: '/api' });
+await fastify.register(locationRoutes, { prefix: '/api' });
+await fastify.register(addonRoutes, { prefix: '/api' });
 
 // ✅ ADD DELIVERY BOY ROUTES
 await fastify.register(deliveryRoutes, { prefix: '/api' });

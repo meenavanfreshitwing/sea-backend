@@ -78,10 +78,15 @@ export const buildDeliverySummary = (orders, products = new Map()) => {
     entry.packs.set(label, (entry.packs.get(label) || 0) + qty);
   };
 
+  const overallAddons = new Map();
+  const finishAddons = map => [...map.entries()]
+    .map(([name, quantity]) => ({ name, quantity }))
+    .sort((a, b) => b.quantity - a.quantity || a.name.localeCompare(b.name));
+
   for (const order of orders) {
     if (!isCountableOrder(order)) continue;
     const date = order.deliveryDate || 'no-date';
-    if (!byDate.has(date)) byDate.set(date, { date, orders: new Set(), cashToCollect: 0, paidOnline: 0, delivered: 0, products: new Map() });
+    if (!byDate.has(date)) byDate.set(date, { date, orders: new Set(), cashToCollect: 0, paidOnline: 0, delivered: 0, products: new Map(), addons: new Map() });
     const day = byDate.get(date);
     const orderKey = order.orderId || String(order._id);
     if (!day.orders.has(orderKey)) {
@@ -90,6 +95,13 @@ export const buildDeliverySummary = (orders, products = new Map()) => {
       if (order.paymentMethod === 'cod' && order.paymentStatus !== 'completed') day.cashToCollect += amount;
       else day.paidOnline += amount;
       if (order.orderStatus === 'delivered') day.delivered += 1;
+    }
+
+    // Masala & other add-ons: packets to pack
+    for (const a of order.addons || []) {
+      const qty = Number(a.quantity) || 0;
+      day.addons.set(a.name, (day.addons.get(a.name) || 0) + qty);
+      overallAddons.set(a.name, (overallAddons.get(a.name) || 0) + qty);
     }
 
     for (const item of order.products || []) {
@@ -145,6 +157,7 @@ export const buildDeliverySummary = (orders, products = new Map()) => {
         paidOnline: Math.round(d.paidOnline * 100) / 100,
         totalKg: sumKg(productsList),
         products: productsList,
+        addons: finishAddons(d.addons),
       };
     });
 
@@ -155,6 +168,7 @@ export const buildDeliverySummary = (orders, products = new Map()) => {
       orderCount: dates.reduce((s, d) => s + d.orderCount, 0),
       totalKg: sumKg(overallProducts),
       products: overallProducts,
+      addons: finishAddons(overallAddons),
     },
   };
 };
